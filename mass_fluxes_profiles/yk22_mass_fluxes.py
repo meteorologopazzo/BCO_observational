@@ -15,8 +15,7 @@ import meteo
 mixed_avg_levels   = slice(200, 500)
 
 ref_bl_hgt = 500.      # m
-ref_p_bl = metpy.calc.height_to_pressure_std(ref_bl_hgt*units.m)
-ref_p_bl = ref_p_bl.to(units.hPa).magnitude
+ref_bl_density = 1.    # kg / m3
 
 ## what height is entrained air from?
 entrainment_levels = slice(700, 1000)    # m
@@ -30,6 +29,9 @@ Rd = 287.
 cp = 1004. # j / kg K
 Lv = 2.5e6 # J/kg
 g = 9.81   # m/s2
+  
+ 
+
 
 def theta_to_T(theta, p):
     return theta * (p / 1000.)**(Rd/cp)
@@ -50,6 +52,9 @@ def rad_terms(sw_in, lw_in, sst):
 def rad_SB_term(theta_bl):
     return ((2 - rad_params["eps"])/(1 - rad_params["eps"])) * rad_params["eps"] * rad_params["stefan"] * theta_bl**4
 
+def compute_RNet(sw_in, lw_in, sst, theta_bl):
+    return rad_terms(sw_in, lw_in, sst) - rad_SB_term(theta_bl)
+
 ################################################################################################
 
 ## TO USE IN SOLVER find_theta_for_pair
@@ -66,7 +71,7 @@ def temp_from_h(theta, p, h_cd, Lv, cp):
     denominator = p - 0.378 * es * (1.0007 + p * 3.46e-6)
     
     return h_cd/cp - theta - (Lv / cp) * 0.622 * es * (1.0007 + p * 3.46e-6) / denominator
-image
+
 def find_theta_for_pair(p, h):
     # def f(t):
     #     return temp_from_h(t, p=p, h_cd=h, Lv=Lv, cp=cp)
@@ -82,73 +87,76 @@ def find_theta_for_pair(p, h):
 # Vectorize the function
 vectorized_theta_root = np.vectorize(find_theta_for_pair)
 
+
+## this function aims at extracting the thermodynamical properties 
+## from entrainment heights and downdrafts, from a single profile at a time
+def properties_from_profile(profile, mixed_avg_levels, entrainment_levels, downdraft_levels, vert_dim):
+
+    h_cd = (cp*profile["ta"] + Lv*profile["q"] + g*profile[vert_dim]).sel({vert_dim:downdraft_levels})
+    p_cd = profile["p"].sel({vert_dim:downdraft_levels}).values
+
+    cd_levels = profile[vert_dim].sel({vert_dim:downdraft_levels}).values
+
+    thetaD = (vectorized_theta_root( p_cd / 100., h_cd))
+    thetaD = xr.DataArray(thetaD, dims=[vert_dim], coords={vert_dim:cd_levels})
+    thetaD = thetaD.rename({vert_dim:"height_cd"})
+
+    qD = (meteo.qsea((thetaD)-273.15 , p_cd/100.)/1e3)
+    qD = xr.DataArray(qD, dims=[vert_dim], coords={vert_dim:cd_levels})
+    qD = qD.rename({vert_dim:"height_cd"})
+
+
+
+    theta_out = profile.theta.sel({vert_dim:entrainment_levels}).rename({vert_dim:"height_e"})
+    theta_bl  = profile.theta.sel({vert_dim:mixed_avg_levels}).mean(dim = vert_dim) #.rename({vert_dim:"height_e"})
+
+    q_out = profile.q.sel({vert_dim:entrainment_levels}).rename({vert_dim:"height_e"})
+    q_bl  = profile.q.sel({vert_dim:mixed_avg_levels}).mean(dim = vert_dim) #.rename({vert_dim:"height_e"})
+
+
+    return xr.Dataset(
+        dict(
+            thetaD=thetaD,
+            qD=qD,
+            theta_out=theta_out,
+            theta_bl=theta_bl,
+            q_out=q_out,
+            q_bl=q_bl
+        )
+        )
+
+
+## input the properties_from_profile() results
+## build the matrix with due coefficients
+## to solve for the entrainment and CD mass fluxes
+def solve_qTh_equations(profile_props, shf, lhf, RNet, Fa_q, Fa_th):
+
+    # size = (Elevs, 2, 2)
+    A = np.zeros((2, 2))
+    A[0, 0] = (profile_props["theta_out"].mean() - profile_props["theta_bl"]).values
+    A[0, 1] = (profile_props["thetaD"].mean() - profile_props["theta_bl"]).values
+    A[1, 0] = (profile_props["q_out"].mean() - profile_props["q_bl"]).values
+    A[1, 1] = (profile_props["qD"].mean() - profile_props["q_bl"]).values
+
+    # shape (Elevs, 2)
+    b = np.zeros((2))
+    b[0] = - shf / cp - (RNet) / cp - ref_bl_density*ref_bl_hgt*Fa_th
+    b[1] = - lhf / Lv - ref_bl_density*ref_bl_hgt*Fa_q
+
+    # results shape (Elevs, 2)
+    x = np.linalg.solve(A, b)
+
+    me = xr.DataArray(x[0], attrs={"units":"kg / m2 s"})
+    mD = xr.DataArray(x[1], attrs={"units":"kg / m2 s"})
+
+    return xr.Dataset(
+        dict(
+            m_e = me, 
+            m_cd = mD
+        )
+    )
+
 ################################################################################################
-
-
-# ingr_eu = xr.open_dataset("/work/mh1498/m301248/TCO_data/fluxes_data/EUREC4A_IngrFlux.nc")
-# sst_eu = ingr_eu.sst.sel(cell=[17,24,31,18,25,32, 19,26,33]).mean(dim=["cell", "time"])
-
-# fluxes_eu = xr.open_dataset("/work/mh1498/m301248/TCO_data/fluxes_data/sfcFluxes_EUREC4A.nc")
-# lhf_era5_eu = fluxes_eu.lhf.sel(cell=[17,24,31,18,25,32, 19,26,33]).mean(dim=["cell", "time"])
-# shf_era5_eu = fluxes_eu.shf.sel(cell=[17,24,31,18,25,32, 19,26,33]).mean(dim=["cell", "time"])
-
-
-def mass_fluxes_mean_profile(input_ingredients, sfc_fluxes, radiosonde_ds, entrainment_levels, downdraft_levels):
-
-    lhf, shf = sfc_fluxes[0], sfc_fluxes[1]
-
-    non_thBL_terms_eu = rad_terms(input_ingredients.sw_global.sel(cell=0).mean(dim="time").values,
-                                input_ingredients.lw_diff.sel(cell=0).mean(dim="time").values, 
-                                input_ingredients.sst.sel(cell=[17,24,31,18,25,32, 19,26,33]).mean(dim=["cell", "time"]).values)
-
-
-    h_cd = (cp*radiosonde_ds["ta"] + Lv*radiosonde_ds["mr"] + g*radiosonde_ds.height).mean(dim="launch_time").sel(height=downdraft_levels)
-
-    p_cd = radiosonde_ds["p"].mean(dim="launch_time").sel(height=downdraft_levels).values
-
-    ## find \theta_{cd}
-    thetaD = vectorized_theta_root(p_cd / 100., h_cd)
-
-    ## compute q_sat(s_{cd}/cp = \theta_{cd}) at a pressure level representative of BL depth ~ 500m
-    qSat_out = meteo.qsea(  thetaD-273.15 , ref_p_bl  )/1e3    # kg / kg   # p_cd_eu/100
-
-
-
-    ## set all remaining thermodynamics
-    theta_out = theta.sel(height=entrainment_levels).values
-    q_out     = q.sel(height=entrainment_levels).values
-
-    theta_bl = theta.sel(height=mixed_avg_levels).mean()
-    q_bl     = q.sel(height=mixed_avg_levels).mean()
-
-    ## missing member of radiative cooling, dependent on \theta_BL
-    thBL_term = rad_SB_term(theta_bl)
-
-
-
-
-
-    ## matrix inversion and computation of mass fluxes
-    A_eu = np.zeros((theta_out.size, 2, 2))
-    A_eu[:, 0, 0] = theta_out - theta_bl
-    A_eu[:, 0, 1] = np.nanmean(thetaD) - theta_bl
-    A_eu[:, 1, 0] = q_out - q_bl
-    A_eu[:, 1, 1] = np.nanmean(qSat_out) - q_bl
-
-    # b_eu: shape (N, 2)
-    b_eu = np.zeros((len(theta_out), 2))
-    b_eu[:, 0] = - shf / cp - (non_thBL_terms_eu - thBL_term) / cp
-    b_eu[:, 1] = - lhf / Lv
-
-    # Step 3: Solve batch system: A_eu @ x_eu = b_eu
-    # Use np.linalg.solve for batch matrix inversion (fastest)
-    x_eu = np.linalg.solve(A_eu, b_eu)  # Shape: (N, 2)
-
-    ## x[0] == entrainment mass flux
-    ## x[1] == convective downdraft mass flux
-    return x
-
-
 
 
 
@@ -156,58 +164,3 @@ def mass_fluxes_mean_profile(input_ingredients, sfc_fluxes, radiosonde_ds, entra
 def compute_BL_height(profile):
     ''' to implement with criterion on MSE '''
     return 500.
-
-def mass_fluxes_profile(input_ingredients, sfc_fluxes, radiosonde_profile, entrainment_levels, downdraft_levels):
-
-    lhf, shf = sfc_fluxes[0], sfc_fluxes[1]
-
-    non_thBL_terms_eu = rad_terms(input_ingredients.sw_global.sel(cell=0).mean(dim="time").values,
-                                input_ingredients.lw_diff.sel(cell=0).mean(dim="time").values, 
-                                input_ingredients.sst.sel(cell=[17,24,31,18,25,32, 19,26,33]).mean(dim=["cell", "time"]).values)
-
-
-    h_cd = (cp*radiosonde_profile["ta"] + Lv*radiosonde_profile["mr"] + g*radiosonde_profile.height).mean(dim="launch_time").sel(height=downdraft_levels)
-
-    p_cd = radiosonde_profile["p"].mean(dim="launch_time").sel(height=downdraft_levels).values
-
-    ## find \theta_{cd}
-    thetaD = vectorized_theta_root(p_cd / 100., h_cd)
-
-    ## compute q_sat(s_{cd}/cp = \theta_{cd}) at a pressure level representative of BL depth ~ 500m
-    qSat_out = meteo.qsea(  thetaD-273.15 , ref_p_bl  )/1e3    # kg / kg   # p_cd_eu/100
-
-
-
-    ## set all remaining thermodynamics
-    theta_out = radiosonde_profile["theta"].sel(height=entrainment_levels).values
-    q_out     = radiosonde_profile["mr"].sel(height=entrainment_levels).values
-
-    theta_bl = radiosonde_profile["theta"].sel(height=mixed_avg_levels).mean()
-    q_bl     = radiosonde_profile["mr"].sel(height=mixed_avg_levels).mean()
-
-    ## missing member of radiative cooling, dependent on \theta_BL
-    thBL_term = rad_SB_term(theta_bl)
-
-
-
-
-
-    ## matrix inversion and computation of mass fluxes
-    A_eu = np.zeros((theta_out.size, 2, 2))
-    A_eu[:, 0, 0] = theta_out - theta_bl
-    A_eu[:, 0, 1] = np.nanmean(thetaD) - theta_bl
-    A_eu[:, 1, 0] = q_out - q_bl
-    A_eu[:, 1, 1] = np.nanmean(qSat_out) - q_bl
-
-    # b_eu: shape (N, 2)
-    b_eu = np.zeros((len(theta_out), 2))
-    b_eu[:, 0] = - shf / cp - (non_thBL_terms_eu - thBL_term) / cp
-    b_eu[:, 1] = - lhf / Lv
-
-    # Step 3: Solve batch system: A_eu @ x_eu = b_eu
-    # Use np.linalg.solve for batch matrix inversion (fastest)
-    x_eu = np.linalg.solve(A_eu, b_eu)  # Shape: (N, 2)
-
-    ## x[0] == entrainment mass flux
-    ## x[1] == convective downdraft mass flux
-    return x
