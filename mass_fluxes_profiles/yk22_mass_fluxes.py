@@ -34,8 +34,27 @@ g = 9.81   # m/s2
 
 
 def theta_to_T(theta, p):
+    """
+    input:
+    - p (hPa) pressure
+    - theta (K) pot temperature
+    """
     return theta * (p / 1000.)**(Rd/cp)
 
+def T_to_theta(T, p):
+    """
+    input:
+    - p (hPa) pressure
+    - T (K) temperature
+    """
+    return T * (p / 1000.)**(-Rd/cp)
+
+'''
+def rad_terms(sw_in, lw_in, sst):
+    return (eps/(1-eps))*lw_in +eps*oc_abs*stefan*(sst)**4 + ((eta/(1-eta)) + eta*(1-oc_alb))*sw_in
+
+def R_net(sw_in, lw_in, sst, theta_bl):
+    return rad_terms(sw_in, lw_in, sst) - ((2 - eps)/(1 - eps))*eps*stefan*(theta_bl)**4'''
 
 
 ## compute terms in radiative fluxes, following YK22 
@@ -47,10 +66,10 @@ rad_params = {
     "oc_alb": 0.055
 }
 def rad_terms(sw_in, lw_in, sst):
-    return (rad_params["eps"]/(1-rad_params["eps"]))*lw_in +rad_params["eps"]*rad_params["oc_abs"]*rad_params["stefan"]*(sst)**4 + ((rad_params["eta"]//(1-rad_params["eta"])) + rad_params["eta"]*(1-rad_params["oc_alb"]))*sw_in
+    return (rad_params["eps"]/(1-rad_params["eps"]))*lw_in +rad_params["eps"]*rad_params["oc_abs"]*rad_params["stefan"]*(sst)**4 + ((rad_params["eta"]/(1-rad_params["eta"])) + rad_params["eta"]*(1-rad_params["oc_alb"]))*sw_in
 
 def rad_SB_term(theta_bl):
-    return ((2 - rad_params["eps"])/(1 - rad_params["eps"])) * rad_params["eps"] * rad_params["stefan"] * theta_bl**4
+    return ((2 - rad_params["eps"])/(1 - rad_params["eps"])) * rad_params["eps"] * rad_params["stefan"] * (theta_bl)**4
 
 def compute_RNet(sw_in, lw_in, sst, theta_bl):
     return rad_terms(sw_in, lw_in, sst) - rad_SB_term(theta_bl)
@@ -60,26 +79,25 @@ def compute_RNet(sw_in, lw_in, sst, theta_bl):
 ## TO USE IN SOLVER find_theta_for_pair
 ## h_{cd} - s_{cd} - Lv*q_sat(s_{cd}/cp) = 0
 ## where I find theta as cp*\theta = s_cd
-def temp_from_h(theta, p, h_cd, Lv, cp):
+def temp_from_h(theta, p, h_cd, Lv, cp, sat_frac):
     # input:
     # - p : pressure in hPa
     # - h_cd : moist static energy at convective downdraft level, J/kg
     # - Lv : latent heat of vaporization = 2.5e6 J/kg
     # - cp : specific heat dry air = 1004.67 J/kg K
+    # - sat_frac : fraction of saturation, to test when different from 1.
 
-    es = 6.1121 * np.exp(17.502 * (theta-273.15) / (240.97 + (theta-273.15)))
+    es = 6.1121 * np.exp(17.502 * ( theta -273.15) / (240.97 + ( theta -273.15)))     # TRY HERE TO USE theta*(p/1000.)**(R/cp) - returns physically consistent values, but mass fluxes become negative :/
     denominator = p - 0.378 * es * (1.0007 + p * 3.46e-6)
     
-    return h_cd/cp - theta - (Lv / cp) * 0.622 * es * (1.0007 + p * 3.46e-6) / denominator
+    return h_cd/cp - theta - sat_frac*(Lv / cp)*0.622*es*(1.0007 + p * 3.46e-6) / denominator
 
-def find_theta_for_pair(p, h):
-    # def f(t):
-    #     return temp_from_h(t, p=p, h_cd=h, Lv=Lv, cp=cp)
+def find_theta_for_pair(p, h, sat_frac):
     
-    f = lambda t : temp_from_h(t, p=p, h_cd=h, Lv=Lv, cp=cp)
+    f = lambda t : temp_from_h(t, p=p, h_cd=h, Lv=Lv, cp=cp, sat_frac=sat_frac)
 
     try:
-        sol = root_scalar(f, bracket=[280,300], method='brentq')
+        sol = root_scalar(f, bracket=[270,350], method='brentq')
         return sol.root if sol.converged else np.nan
     except:
         return np.nan
@@ -90,27 +108,27 @@ vectorized_theta_root = np.vectorize(find_theta_for_pair)
 
 ## this function aims at extracting the thermodynamical properties 
 ## from entrainment heights and downdrafts, from a single profile at a time
-def properties_from_profile(profile, mixed_avg_levels, entrainment_levels, downdraft_levels, vert_dim):
+def properties_from_profile(profile, mixed_avg_levels, entrainment_levels, downdraft_levels, CD_sat_frac, vert_dim):
 
     h_cd = (cp*profile["ta"] + Lv*profile["q"] + g*profile[vert_dim]).sel({vert_dim:downdraft_levels})
-    p_cd = profile["p"].sel({vert_dim:downdraft_levels}).values
+    p_cd = profile["p"].sel({vert_dim:downdraft_levels}).values/100.  ## hPa
 
     cd_levels = profile[vert_dim].sel({vert_dim:downdraft_levels}).values
 
-    thetaD = (vectorized_theta_root( p_cd / 100., h_cd))
-    thetaD = xr.DataArray(thetaD, dims=[vert_dim], coords={vert_dim:cd_levels})
+    thetaD = (vectorized_theta_root( p_cd , h_cd, sat_frac=CD_sat_frac))
+    thetaD = xr.DataArray(thetaD, dims=[vert_dim], coords={vert_dim:cd_levels, "p_cd": (vert_dim, p_cd)})
     thetaD = thetaD.rename({vert_dim:"height_cd"})
 
-    qD = (meteo.qsea((thetaD)-273.15 , p_cd/100.)/1e3)
-    qD = xr.DataArray(qD, dims=[vert_dim], coords={vert_dim:cd_levels})
+    qD = CD_sat_frac*(meteo.qsea((thetaD)-273.15 , p_cd)/1e3)
+    qD = xr.DataArray(qD, dims=[vert_dim], coords={vert_dim:cd_levels, "p_cd": (vert_dim, p_cd)})
     qD = qD.rename({vert_dim:"height_cd"})
 
 
 
-    theta_out = profile.theta.sel({vert_dim:entrainment_levels}).rename({vert_dim:"height_e"})
+    theta_out = profile.theta.sel({vert_dim:entrainment_levels})  #.rename({vert_dim:"height_e"})
     theta_bl  = profile.theta.sel({vert_dim:mixed_avg_levels}).mean(dim = vert_dim) #.rename({vert_dim:"height_e"})
 
-    q_out = profile.q.sel({vert_dim:entrainment_levels}).rename({vert_dim:"height_e"})
+    q_out = profile.q.sel({vert_dim:entrainment_levels})  #.rename({vert_dim:"height_e"})
     q_bl  = profile.q.sel({vert_dim:mixed_avg_levels}).mean(dim = vert_dim) #.rename({vert_dim:"height_e"})
 
 
@@ -134,9 +152,9 @@ def solve_qTh_equations(profile_props, shf, lhf, RNet, Fa_q, Fa_th):
     # size = (Elevs, 2, 2)
     A = np.zeros((2, 2))
     A[0, 0] = (profile_props["theta_out"].mean() - profile_props["theta_bl"]).values
-    A[0, 1] = (profile_props["thetaD"].mean() - profile_props["theta_bl"]).values
+    A[0, 1] = (profile_props["thetaD"].weighted((profile_props["thetaD"].p_cd).diff(dim="height_cd", n=1)).mean() - profile_props["theta_bl"]).values
     A[1, 0] = (profile_props["q_out"].mean() - profile_props["q_bl"]).values
-    A[1, 1] = (profile_props["qD"].mean() - profile_props["q_bl"]).values
+    A[1, 1] = (profile_props["qD"].weighted((profile_props["thetaD"].p_cd).diff(dim="height_cd", n=1)).mean() - profile_props["q_bl"]).values
 
     # shape (Elevs, 2)
     b = np.zeros((2))
@@ -151,8 +169,8 @@ def solve_qTh_equations(profile_props, shf, lhf, RNet, Fa_q, Fa_th):
 
     return xr.Dataset(
         dict(
-            m_e = me, 
-            m_cd = mD
+            me = me, 
+            mD = mD
         )
     )
 
