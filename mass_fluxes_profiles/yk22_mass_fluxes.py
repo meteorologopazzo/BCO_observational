@@ -156,6 +156,9 @@ def solve_qTh_equations(profile_props, shf, lhf, RNet, Fa_q, Fa_th):
     A[1, 0] = (profile_props["q_out"].mean() - profile_props["q_bl"]).values
     A[1, 1] = (profile_props["qD"].weighted((profile_props["thetaD"].p_cd).diff(dim="height_cd", n=1)).mean() - profile_props["q_bl"]).values
 
+    ## DEBUG
+    det = np.linalg.det(A)
+
     # shape (Elevs, 2)
     b = np.zeros((2))
     b[0] = - shf / cp - (RNet) / cp - ref_bl_density*ref_bl_hgt*Fa_th
@@ -167,12 +170,14 @@ def solve_qTh_equations(profile_props, shf, lhf, RNet, Fa_q, Fa_th):
     me = xr.DataArray(x[0], attrs={"units":"kg / m2 s"})
     mD = xr.DataArray(x[1], attrs={"units":"kg / m2 s"})
 
-    return xr.Dataset(
+    m = xr.Dataset(
         dict(
             me = me, 
             mD = mD
         )
     )
+
+    return m, A, det
 
 ################################################################################################
 
