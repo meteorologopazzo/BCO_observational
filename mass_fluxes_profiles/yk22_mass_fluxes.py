@@ -86,8 +86,8 @@ def temp_from_h(theta, p, h_cd, Lv, cp, sat_frac):
     # - Lv : latent heat of vaporization = 2.5e6 J/kg
     # - cp : specific heat dry air = 1004.67 J/kg K
     # - sat_frac : fraction of saturation, to test when different from 1.
-
-    es = 6.1121 * np.exp(17.502 * ( theta*(p/1000.)**(Rd/cp) -273.15) / (240.97 + ( theta*(p/1000.)**(Rd/cp) -273.15)))     # TRY HERE TO USE theta*(p/1000.)**(R/cp) - returns physically consistent values, but mass fluxes become negative :/
+    T = theta #*(p/1000.)**(Rd/cp)
+    es = 6.1121 * np.exp(17.502 * ( T -273.15) / (240.97 + ( T -273.15)))     # TRY HERE TO USE theta*(p/1000.)**(R/cp) - returns physically consistent values, but mass fluxes become negative :/
     denominator = p - 0.378 * es * (1.0007 + p * 3.46e-6)
     
     return h_cd/cp - theta - sat_frac*(Lv / cp)*0.622*es*(1.0007 + p * 3.46e-6) / denominator
