@@ -86,7 +86,7 @@ def temp_from_h(theta, p, h_cd, Lv, cp, sat_frac):
     # - Lv : latent heat of vaporization = 2.5e6 J/kg
     # - cp : specific heat dry air = 1004.67 J/kg K
     # - sat_frac : fraction of saturation, to test when different from 1.
-    T = theta #*(p/1000.)**(Rd/cp)
+    T = theta*(p/1000.)**(Rd/cp)
     es = 6.1121 * np.exp(17.502 * ( T -273.15) / (240.97 + ( T -273.15)))     # TRY HERE TO USE theta*(p/1000.)**(R/cp) - returns physically consistent values, but mass fluxes become negative :/
     denominator = p - 0.378 * es * (1.0007 + p * 3.46e-6)
     
@@ -112,14 +112,15 @@ def properties_from_profile(profile, mixed_avg_levels, entrainment_levels, downd
 
     h_cd = (cp*profile["ta"] + Lv*profile["q"] + g*profile[vert_dim]).sel({vert_dim:downdraft_levels})
     p_cd = profile["p"].sel({vert_dim:downdraft_levels}).values/100.  ## hPa
+    sfc_p = 1000*np.ones_like(p_cd)
 
     cd_levels = profile[vert_dim].sel({vert_dim:downdraft_levels}).values
 
-    thetaD = (vectorized_theta_root( p_cd , h_cd, sat_frac=CD_sat_frac))
+    thetaD = (vectorized_theta_root( sfc_p , h_cd, sat_frac=CD_sat_frac))
     thetaD = xr.DataArray(thetaD, dims=[vert_dim], coords={vert_dim:cd_levels, "p_cd": (vert_dim, p_cd)})
     thetaD = thetaD.rename({vert_dim:"height_cd"})
 
-    qD = CD_sat_frac*(meteo.qsea((thetaD)-273.15 , p_cd)/1e3)
+    qD = CD_sat_frac*(meteo.qsea((thetaD)-273.15 , sfc_p)/1e3)
     qD = xr.DataArray(qD, dims=[vert_dim], coords={vert_dim:cd_levels, "p_cd": (vert_dim, p_cd)})
     qD = qD.rename({vert_dim:"height_cd"})
 
