@@ -61,3 +61,33 @@ def xr_pearsonr(x, y, dim):
         output_dtypes=[float],
     )
     return r, p
+
+
+def great_circle(lon1, lat1, lon2, lat2): # The result is given in km.
+    import numpy as np
+    
+    R = 6371.0 # Earth radius in km.
+    lon1 = np.pi*lon1/180
+    lat1 = np.pi*lat1/180
+    lon2 = np.pi*lon2/180
+    lat2 = np.pi*lat2/180
+    
+    return R * (
+        np.arccos(np.sin(lat1) * np.sin(lat2) + np.cos(lat1) * np.cos(lat2) * np.cos(lon1 - lon2))
+    )
+
+
+def great_circle_haversine(lon1, lat1, lon2, lat2):
+    import numpy as np
+    
+    lon1 = np.pi*lon1/180
+    lat1 = np.pi*lat1/180
+    lon2 = np.pi*lon2/180
+    lat2 = np.pi*lat2/180
+    R = 6370.   ## km
+    
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    return 2 * R * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
